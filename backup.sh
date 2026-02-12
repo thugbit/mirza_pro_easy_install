@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-echo "==== Mirza Pro Full Backup Script (Hardened) ===="
+echo "==== Mirza Pro Full Backup Script (Stable Version) ===="
 
 CONFIG_PATH="/var/www/mirza_pro/config.php"
 PROJECT_PATH="/var/www/mirza_pro"
@@ -26,11 +26,11 @@ fi
 
 echo "==> Extracting database credentials ..."
 
-DB_NAME=$(grep -oP "(?<=\\\$dbname\s*=\s*')[^']+" "$CONFIG_PATH" || true)
-DB_USER=$(grep -oP "(?<=\\\$usernamedb\s*=\s*')[^']+" "$CONFIG_PATH" || true)
-DB_PASS=$(grep -oP "(?<=\\\$passworddb\s*=\s*')[^']+" "$CONFIG_PATH" || true)
+DB_NAME=$(awk -F"'" '/\$dbname[[:space:]]*=/{print $2; exit}' "$CONFIG_PATH")
+DB_USER=$(awk -F"'" '/\$usernamedb[[:space:]]*=/{print $2; exit}' "$CONFIG_PATH")
+DB_PASS=$(awk -F"'" '/\$passworddb[[:space:]]*=/{print $2; exit}' "$CONFIG_PATH")
 
-if [[ -z "$DB_NAME" || -z "$DB_USER" ]]; then
+if [[ -z "${DB_NAME:-}" || -z "${DB_USER:-}" ]]; then
   echo "ERROR: Failed to extract DB credentials from config.php"
   exit 1
 fi
