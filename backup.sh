@@ -1,45 +1,82 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
-echo "==== Mirza Pro Full Backup Script ===="
-
-BACKUP_DIR="/root/mirza_backup_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-
-echo "==> Detecting database name from config.php ..."
+echo "==== Mirza Pro Full Backup Script (Hardened) ===="
 
 CONFIG_PATH="/var/www/mirza_pro/config.php"
+PROJECT_PATH="/var/www/mirza_pro"
+APACHE_CONF="/etc/apache2/sites-available/mirza-pro.conf"
+LETSENCRYPT_PATH="/etc/letsencrypt"
 
-if [ ! -f "$CONFIG_PATH" ]; then
-  echo "config.php not found! Exiting."
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/root/mirza_backup_${TIMESTAMP}"
+ARCHIVE_PATH="${BACKUP_DIR}.tar.gz"
+LOG_FILE="/root/mirza_backup_${TIMESTAMP}.log"
+
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "==> Checking config.php ..."
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  echo "ERROR: config.php not found at $CONFIG_PATH"
   exit 1
 fi
 
-DB_NAME=$(grep "\$dbname" $CONFIG_PATH | cut -d"'" -f2)
-DB_USER=$(grep "\$usernamedb" $CONFIG_PATH | cut -d"'" -f2)
-DB_PASS=$(grep "\$passworddb" $CONFIG_PATH | cut -d"'" -f2)
+echo "==> Extracting database credentials ..."
+
+DB_NAME=$(grep -oP "(?<=\\\$dbname\s*=\s*')[^']+" "$CONFIG_PATH" || true)
+DB_USER=$(grep -oP "(?<=\\\$usernamedb\s*=\s*')[^']+" "$CONFIG_PATH" || true)
+DB_PASS=$(grep -oP "(?<=\\\$passworddb\s*=\s*')[^']+" "$CONFIG_PATH" || true)
+
+if [[ -z "$DB_NAME" || -z "$DB_USER" ]]; then
+  echo "ERROR: Failed to extract DB credentials from config.php"
+  exit 1
+fi
 
 echo "Database detected: $DB_NAME"
+echo "DB User detected: $DB_USER"
+
+echo "==> Testing database connection ..."
+if ! mysql -u"$DB_USER" -p"$DB_PASS" -e "USE \`$DB_NAME\`;" >/dev/null 2>&1; then
+  echo "ERROR: Cannot connect to database."
+  exit 1
+fi
+
+echo "Database connection OK"
 
 echo "==> Dumping database ..."
-mysqldump -u root "$DB_NAME" > "$BACKUP_DIR/database.sql"
+mysqldump -u"$DB_USER" -p"$DB_PASS" \
+  --single-transaction \
+  --quick \
+  --lock-tables=false \
+  "$DB_NAME" > "$BACKUP_DIR/database.sql"
+
+echo "Database dump completed"
 
 echo "==> Copying project files ..."
-cp -r /var/www/mirza_pro "$BACKUP_DIR/"
+cp -a "$PROJECT_PATH" "$BACKUP_DIR/"
 
-echo "==> Backing up Apache config ..."
-cp /etc/apache2/sites-available/mirza-pro.conf "$BACKUP_DIR/" 2>/dev/null || true
+echo "==> Backing up Apache config (if exists) ..."
+[[ -f "$APACHE_CONF" ]] && cp "$APACHE_CONF" "$BACKUP_DIR/"
 
-echo "==> Backing up SSL certificates ..."
-cp -r /etc/letsencrypt "$BACKUP_DIR/" 2>/dev/null || true
+echo "==> Backing up SSL certificates (if exists) ..."
+[[ -d "$LETSENCRYPT_PATH" ]] && cp -a "$LETSENCRYPT_PATH" "$BACKUP_DIR/"
 
 echo "==> Backing up crontab ..."
 crontab -l > "$BACKUP_DIR/crontab.txt" 2>/dev/null || true
 
 echo "==> Creating compressed archive ..."
-tar -czf "${BACKUP_DIR}.tar.gz" -C /root "$(basename $BACKUP_DIR)"
+tar -czf "$ARCHIVE_PATH" -C /root "$(basename "$BACKUP_DIR")"
 
+echo "==> Cleaning temporary files ..."
 rm -rf "$BACKUP_DIR"
 
-echo "Backup created:"
-echo "${BACKUP_DIR}.tar.gz"
+chmod 600 "$ARCHIVE_PATH"
+
+echo ""
+echo "✅ Backup successfully created:"
+echo "$ARCHIVE_PATH"
+echo "Log file:"
+echo "$LOG_FILE"
